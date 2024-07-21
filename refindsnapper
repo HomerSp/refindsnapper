@@ -735,10 +735,13 @@ do_install() {
     log_info "Creating kernel config"
     mkdir -p /etc/kernel/install.d
 
-    cp kernel/install.d/50-dracut.install /etc/kernel/install.d/50-dracut.install
-    chmod a+x /etc/kernel/install.d/50-dracut.install
+    if [ -e "/usr/lib/kernel/install.d/50-dracut.install" ]; then
+        cp kernel/install.d/50-dracut.install /etc/kernel/install.d/50-dracut.install
+        chmod +x /etc/kernel/install.d/50-dracut.install
+    fi
+
     cp kernel/install.d/99-refindsnapper-restart.install /etc/kernel/install.d/99-refindsnapper-restart.install
-    chmod a+x /etc/kernel/install.d/99-refindsnapper-restart.install
+    chmod +x /etc/kernel/install.d/99-refindsnapper-restart.install
 
     if [ -d "/etc/snapper" ]; then
         log_info "Creating snapper config"
