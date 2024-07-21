@@ -1,0 +1,8 @@
+[Unit]
+Description=Regenerate rEFInd snapper
+StartLimitBurst=0
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/refindsnapper

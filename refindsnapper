@@ -1,0 +1,748 @@
+#!/bin/env bash
+
+log_error() {
+    >&2 echo "Error:" "$@"
+}
+
+log_warning() {
+    >&2 echo "Warning:" "$@"
+}
+
+log_info() {
+    >&2 echo "Info:" "$@"
+}
+
+log_debug() {
+    [[ ${CONFIG_LOG_DEBUG} == true ]] && >&2 echo "Debug:" "$@" || return 0
+}
+
+get_esp_device() {
+    local loader="$(ls -1 "/sys/firmware/efi/efivars/LoaderDevicePartUUID-"* 2>/dev/null)"
+    if [ -n "${loader}" ]; then
+        local partuuid="$(tr -cd '[a-fA-F0-9\-]' < "${loader}" | tr '[:upper:]' '[:lower:]')"
+        if [ -e "/dev/disk/by-partuuid/${partuuid}" ]; then
+            echo "PARTUUID=${partuuid}"
+            return 0
+        fi
+    fi
+
+    if [ -e "/dev/disk/by-partlabel/ESP" ]; then
+        echo "PARTLABEL=ESP"
+        return 0
+    fi
+
+    return 1
+}
+
+MOUNTED_ESP=false
+mount_esp() {
+    local m=${1:-true}
+    local ret=0
+
+    if [ -z "${CONFIG_DIR_ESP}" ]; then
+        log_error "CONFIG_DIR_ESP cannot be empty"
+        return 1
+    fi
+
+    export DIR_ESP=$(bootctl -p 2>/dev/null)
+    if [[ $m == true ]]; then
+        # Only mount the esp if we actually need to
+        if [[ -z "${DIR_ESP}" ]]; then
+            local esp="$(get_esp_device)"
+            if [ -z "${esp}" ]; then
+                log_error "Could not find ESP device"
+                return 1
+            fi
+
+            log_info "Mounting ESP using ${esp}"
+            MOUNTED_ESP=true
+            mkdir -p "${CONFIG_DIR_ESP}"
+            mount "${esp}" "${CONFIG_DIR_ESP}"
+            ret=$?
+        fi
+    else
+        if [[ ${MOUNTED_ESP} == true ]]; then
+            log_info "Unmounting ESP"
+            MOUNTED_ESP=false
+            umount "${CONFIG_DIR_ESP}"
+            ret=$?
+        fi
+    fi
+
+    if [ -z ${DIR_ESP} ]; then
+        DIR_ESP=$(bootctl -p 2>/dev/null)
+    fi
+
+    return ${ret}
+}
+
+INCLUDES_ARR=()
+include() {
+    local file="$(basename "${1}")"
+    if [[ "${file}" != *".conf" ]]; then
+        file="${file}.conf"
+    fi
+
+    if [[ -e "${CONFIG_DIR}/templates.d/${file}" ]]; then
+        for i in ${INCLUDES_ARR[@]}; do
+            if [[ "$i" == "${file}" ]]; then
+                log_warning "Cyclic dependency found from ${BASH_SOURCE[1]}, ignoring include ${file}"
+                return 1
+            fi
+        done
+
+        INCLUDES_ARR+=("${file}")
+        source "${CONFIG_DIR}/templates.d/${file}"
+    else
+        log_warning "Could not find include ${file}"
+    fi
+}
+
+parse_config_file() {
+    local file="${1}"
+    local prefix="${2:-}"
+
+    if [ -n "${prefix}" ]; then
+        while IFS='= ' read -r lhs rhs  || [[ -n "$lhs" ]]
+        do
+            if [[ "${lhs}" != "#"* ]]; then 
+                rhs="${rhs%\"*}"
+                rhs="${rhs#\"*}"
+                declare -g ${prefix}${lhs}="${rhs}"
+            fi
+        done < "${file}"
+    else
+        source "${file}"
+    fi
+
+    log_debug "parse_config_file: ${file}"
+}
+
+load_template() {
+    local dir=${1:-}
+
+    local changed=false
+
+    local machine_id
+    [ -e "${dir}/etc/machine-id" ] && machine_id="$(cat ${dir}/etc/machine-id)"
+    if [ -z ${machine_id} ]; then
+        log_error "Empty machine ID"
+        return 1
+    fi
+
+    if [[ "${machine_id}" != "${MACHINE_ID}" ]]; then
+        if [ -n "${MACHINE_ID}" ]; then
+            log_info "Reloading template config"
+        fi
+
+        changed=true
+        MACHINE_ID="${machine_id}"
+    fi
+
+    if [[ $changed == true ]]; then
+        [ -e "${dir}etc/os-release" ] && parse_config_file "${dir}/etc/os-release" "OS_" || parse_config_file "${dir}/usr/lib/os-release" "OS_"
+        if [[ $? != 0 ]]; then
+            log_error "Could not find os-release"
+            return 1
+        fi
+    fi
+
+    INCLUDES_ARR=()
+    parse_config_file "${CONFIG_DIR}/templates.conf"
+    if [ -e "${CONFIG_DIR}/templates.d/${OS_ID}.conf" ]; then
+        parse_config_file "${CONFIG_DIR}/templates.d/${OS_ID}.conf"
+    fi
+
+    return 0
+}
+
+load_config() {
+    [ -e "${PWD}/conf/config.conf" ] && CONFIG_DIR="${PWD}/conf" || CONFIG_DIR="/etc/refindsnapper"
+    parse_config_file "${CONFIG_DIR}/config.conf"
+}
+
+wait_file() {
+    local f="$1"
+    local t=0
+    until [ -s "$f" ] || (( t++ >= 5 )); do
+        sleep 1
+    done
+    [ -e "$f" ] && return 0 || return 1
+}
+
+find_kernel() {
+    local template="$1"
+    local findglob="$2"
+    local path="$3"
+    local ret=
+    if [ -n "${template}" ]; then
+        if [ -f "${DIR_ESP}${TEMPLATE_UKI_DIR}/${template}.efi" -o -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${template}" ]; then
+            ret="${template}"
+        fi
+    fi
+
+    if [ -z "${ret}" -a -n "${findglob}" ]; then
+        for k in "${default_kernels[@]}"; do
+            if [[ "$k" == *${findglob}* ]]; then
+                ret="$k"
+                break
+            fi
+        done
+    fi
+
+    if [ -z "${ret}" ]; then
+        ret="${default_kernels[0]}"
+    fi
+
+    if [[ -n "${ret}" && ! -f "${path}/usr/lib/modules/${ret}/vmlinuz" ]]; then
+        ret=""
+    fi
+
+    if [[ -n "$path" && -z "${ret}" ]]; then
+        local kernels=($(ls -1 "${path}/usr/lib/modules/" | sort -fVr))
+        for k in "${kernels[@]}"; do
+            if [ -f "${DIR_ESP}${TEMPLATE_UKI_DIR}/${k}.efi" -o -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${k}" ]; then
+                ret="${k}"
+                break
+            fi
+        done
+    fi
+
+    echo "$ret"
+    return 0
+}
+
+get_kernel_file() {
+    local file="$1"
+    local path=
+    local need_initrd=0
+    if [ -f "${DIR_ESP}${TEMPLATE_UKI_DIR}/${TEMPLATE_UKI_PREFIX}${file}.efi" ]; then
+        path="${TEMPLATE_UKI_DIR}/${TEMPLATE_UKI_PREFIX}${file}.efi"
+    fi
+
+    if [[ "${TEMPLATE_UKI_PREFERRED}" != true || -z "${path}" ]]; then
+        if [ -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}" ]; then
+            local found_path="$(find "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}" -maxdepth 1 -name "${TEMPLATE_LINUX_FILE}*" -exec ls -t1 {} \+ | head -1)"
+            local linux_file="$(basename "${found_path}")"
+            if [ -n "${linux_file}" ]; then
+                path="${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}/${linux_file}"
+                need_initrd=1
+            fi
+        fi
+    fi
+
+    log_debug "get_kernel_file: ${need_initrd} ${path}"
+    ret=(${need_initrd} "${path}")
+    echo "${ret[*]}"
+}
+
+get_initrd_file() {
+    local file="$1"
+    local ret=
+
+    if [ -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}" ]; then
+        local found_path="$(find "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}" -maxdepth 1 -name "${TEMPLATE_INITRD_FILE}*" -exec ls -t1 {} \+ | head -1)"
+        local initrd_file="$(basename "${found_path}")"
+        if [ -n "${initrd_file}" ]; then
+            ret="${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}/${initrd_file}"
+        fi
+    fi
+
+    log_debug "get_initrd_file: ${ret}"
+    echo "$ret"
+    return 0
+}
+
+get_kernel_cmdline() {
+    local subvol="${1}"
+    local path="${2}"
+    if [ -n "${path}" -a -f "${path}/etc/kernel/cmdline" ]; then
+        cmdline=($(cat "${path}/etc/kernel/cmdline"))
+    else
+        cmdline=($(cat /etc/kernel/cmdline))
+    fi
+
+    local cmdline_root=
+    local cmdline_rootflags=()
+    for i in "${!cmdline[@]}"; do
+        if [[ "${cmdline[$i]}" == "root="* ]]; then
+            cmdline_root="${cmdline[$i]#root=}"
+            unset cmdline[$i]
+        elif [[ "${cmdline[$i]}" == "rootflags="* ]]; then
+            cmdline_rootflags+=($(IFS=, ; echo ${cmdline[$i]#rootflags=}))
+            unset cmdline[$i]
+        fi
+    done
+
+    if [ -z "${cmdline_root}" ]; then
+        local uuid="$(findmnt -nf -o uuid /)"
+        cmdline_root="UUID=${uuid}"
+    fi
+
+    if [[ $CONFIG_VALIDATE_ROOT_UUID == true ]]; then
+        local uuid="$(findmnt -nf -o uuid ${cmdline_root})"
+        if [ -z "${uuid}" ]; then
+            log_warning "Could not find root ${cmdline_root} for ${subvol}"
+            return 1
+        fi
+    fi
+
+    local rootflags_subvol="${subvol}"
+    if [[ "${#cmdline_rootflags[@]}" > 0 ]]; then
+         for i in "${!cmdline_rootflags[@]}"; do
+            if [[ "${cmdline_rootflags[$i]}" == "subvol="* ]]; then
+                rootflags_subvol=${cmdline_rootflags[$i]#subvol=}
+                unset cmdline_rootflags[$i]
+            fi
+        done
+    fi
+
+    cmdline_rootflags=("subvol=${rootflags_subvol}" ${cmdline_rootflags[@]})
+    local rootflags=$(IFS=, ; echo "${cmdline_rootflags[*]}")
+    local cmdline="root=${cmdline_root} rootflags=${rootflags[*]} ${cmdline[*]}"
+    log_debug "get_kernel_cmdline for ${subvol}: ${cmdline}"
+    echo "${cmdline}"
+    return 0
+}
+
+# Get the current subvol from the cmdline, or, failing that, from the default subvolume
+get_current_subvol() {
+    local subvol=
+    for c in $(cat /proc/cmdline); do
+        if [[ ${c} == rootflags\=* ]]; then
+            for flag in $(IFS=, ; echo ${c#rootflags=}); do
+                if [[ ${flag} == subvol\=* ]]; then
+                    subvol="${flag#subvol=}"
+                    break
+                fi
+            done
+
+            break
+        fi
+    done
+    [ -z "${subvol}" ] && subvol="$(btrfs subvolume get-default / 2>&1)"
+    [ -n "${subvol}" ] && subvol="@/${subvol#*@/}"
+    log_debug "get_current_subvol: ${subvol}"
+    echo "${subvol}"
+    return 0
+}
+
+submenu_add_kernel() {
+    local kernel="${1}"
+    local label="${2}"
+    local options="${3}"
+
+    local file_arr=($(get_kernel_file "${kernel}"))
+    local file=${file_arr[1]}
+    local need_initrd=${file_arr[0]}
+    if [ -z "${file}" ]; then
+        return 1
+    fi
+
+    local initrd=
+    if [[ ${need_initrd} == 1 ]]; then
+        initrd=$(get_initrd_file "${kernel}")
+        if [ -z "${initrd}" ]; then
+            return 1
+        fi
+    fi
+
+    local line_loader=""
+    if [[ "${file}" != "${kernel_default_file}" ]]; then
+        line_loader="
+        loader   ${file}"
+    fi
+    local line_initrd=
+    if [[ -n "${initrd}" && "${initrd}" != "${kernel_default_initrd}" ]]; then
+        line_initrd="
+        initrd   ${initrd}"
+    elif [[ -n "${kernel_default_initrd}" && -z "${initrd}" ]]; then
+        line_initrd="
+        initrd"
+    fi
+    local line_options=
+    if [[ -n "${options}" && "${options}" != "${kernel_default_options}" ]]; then
+        line_options="
+        options \"${options}\""
+    fi
+
+    log_info "Adding ${label}"
+    tee -a "${tmp_file}" <<EOF > /dev/null
+    submenuentry "${label}" {${line_loader}${line_initrd}${line_options}
+    }
+EOF
+
+    return 0
+}
+
+add_menu_kernels() {
+    for kernel in "${default_kernels[@]}"; do
+        if [[ "$kernel" == "$kernel_default" ]]; then
+            continue
+        fi
+
+        submenu_add_kernel "${kernel}" "Kernel ${kernel}" "${kernel_default_options}"
+    done
+}
+
+add_menu_snapshots() {
+    local count_snapshot=0
+    for number in $(ls -1 "${snapshot_dir}/" | sort -fVr); do
+        if [ -n "${TEMPLATE_SNAPSHOTS_MAX}" ]; then
+            if [ "${count_snapshot}" -ge "${TEMPLATE_SNAPSHOTS_MAX}" ]; then
+                log_warning "Reached maximum snapshots ${count_snapshot}/${TEMPLATE_SNAPSHOTS_MAX}, skipping..."
+                break
+            fi
+        fi
+
+        local infoxml="${snapshot_dir}/${number}/info.xml"
+        local path="${snapshot_dir}/${number}/snapshot"
+        local subvol="${snapshot_subvol}/${number}/snapshot"
+
+        if [ ! -d "${path}" ]; then
+            continue
+        fi
+
+        if [[ "${subvol_current}" == "${subvol}" ]]; then
+            log_info "Skipping current Snapshot ${number}"
+            continue
+        fi
+
+        if ! load_template "${path}"; then
+            log_warning "Could not load snapshot template"
+            continue
+        fi
+
+        kernel_need_initrd=0
+        local kernel_snapshot=$(find_kernel "${TEMPLATE_KERNEL_SNAPSHOT}" "${TEMPLATE_KERNEL_SNAPSHOT_GLOB}" "${path}")
+        local kernel_snapshot_arr=($(get_kernel_file "${kernel_snapshot}"))
+        local kernel_snapshot_file=${kernel_snapshot_arr[1]}
+        local kernel_snapshot_need_initrd=${kernel_snapshot_arr[0]}
+        if [ -z "${kernel_snapshot_file}" ]; then
+            log_warning "Could not find kernel for snapshot ${subvol}"
+            continue
+        fi
+
+        local kernel_snapshot_initrd=
+        if [[ ${kernel_snapshot_need_initrd} == 1 ]]; then
+            kernel_snapshot_initrd=$(get_initrd_file "${kernel_snapshot}")
+            if [ -z "${kernel_snapshot_initrd}" ]; then
+                log_warning "Could not find required snapshot initrd for ${kernel_snapshot}"
+                continue
+            fi
+        fi
+
+        count_snapshot=$((count_snapshot+1))
+
+        local type=
+        if wait_file "${infoxml}"; then
+            type=$(xmllint --xpath "//type/text()" "${infoxml}")
+        fi
+
+        local cmdline=($(get_kernel_cmdline "${subvol}" "${path}"))
+        if [[ ${#cmdline[@]} == 0 ]]; then
+            log_warning "Empty command line for Snapshot ${number}, ignoring"
+            continue
+        fi
+
+        KERNEL="${kernel_snapshot}"
+        NUMBER="${number}"
+        TYPE="${type}"
+        if ! load_template "${path}"; then
+            log_warning "Could not load snapshot template"
+            continue
+        fi
+
+        [[ -z "${TEMPLATE_LABEL_SNAPSHOT}" ]] && local label="${TEMPLATE_LABEL_DEFAULT}" || local label="${TEMPLATE_LABEL_SNAPSHOT}"
+        log_info "Adding ${label}"
+
+        local line_loader=""
+        if [[ "${kernel_snapshot_file}" != "${kernel_default_file}" ]]; then
+            line_loader="
+        loader   ${kernel_snapshot_file}"
+        fi
+        local line_initrd=
+        if [[ -n "${kernel_snapshot_initrd}" && "${kernel_snapshot_initrd}" != "${kernel_default_initrd}" ]]; then
+            line_initrd="
+        initrd   ${kernel_snapshot_initrd}"
+        elif [[ -n "${kernel_default_initrd}" && -z "${kernel_snapshot_initrd}" ]]; then
+            line_initrd="
+        initrd"
+        fi
+        local line_options="
+        options \"${cmdline[*]}\""
+
+        tee -a "${tmp_file}" <<EOF > /dev/null
+    submenuentry "${label}" {${line_loader}${line_initrd}${line_options}
+    }
+EOF
+    done
+}
+
+add_menu_singleuser() {
+    submenu_add_kernel "${kernel_default}" "Single-user mode" "${kernel_default_options} single"
+}
+
+add_menu_minimal() {
+    local cmdline_minimal=()
+    for c in ${kernel_default_cmdline[@]}; do
+        if [[ "${c}" == root\=* || "${c}" == rootflags\=* ]]; then
+            cmdline_minimal+=("${c}")
+        fi
+    done
+
+    submenu_add_kernel "${kernel_default}" "Minimal options" "${cmdline_minimal[*]}"
+}
+
+update_loader() {
+    snapshot_dir="${CONFIG_DIR_SNAPSHOTS}"
+    if [ -z "${snapshot_dir}" -o ! -d "${snapshot_dir}" ]; then
+        log_error "Could not find snapshots directory, is snapper set up?"
+        return 1
+    fi
+
+    if ! load_template; then
+        log_error "Could not load template"
+        return 1
+    fi
+
+    snapshot_subvol="$(findmnt -nf -o fsroot ${snapshot_dir})"
+    snapshot_subvol=${snapshot_subvol#/}
+
+    conf_file="${DIR_ESP}${CONFIG_ESP_DIR_REFIND}/${TEMPLATE_CONF_FILE}"
+
+    subvol_current=$(get_current_subvol)
+    if [ -z "${subvol_current}" ]; then
+        log_error "Could not find the current subvolume"
+        return 1
+    fi
+
+    default_kernels=($(ls -1 "/usr/lib/modules/" | sort -fVr))
+    if [[ ${#default_kernels[@]} == 0 ]]; then
+        log_error "Could not find any kernels"
+        return 1
+    fi
+
+    kernel_default=$(find_kernel "${TEMPLATE_KERNEL_DEFAULT}" "${TEMPLATE_KERNEL_DEFAULT_GLOB}")
+    local kernel_file_arr=($(get_kernel_file "${kernel_default}"))
+    kernel_default_file=${kernel_file_arr[1]}
+    kernel_need_initrd=${kernel_file_arr[0]}
+    if [ -z "${kernel_default_file}" ]; then
+        log_error "Could not find default kernel ${kernel_default}"
+        return 1
+    fi
+
+    kernel_default_initrd=
+    if [[ ${kernel_need_initrd} == 1 ]]; then
+        kernel_default_initrd=$(get_initrd_file "${kernel_default}")
+        if [ -z "${kernel_default_initrd}" ]; then
+            log_error "Could not find required initrd for ${kernel_default}"
+            return 1
+        fi
+    fi
+
+    KERNEL="${kernel_default}"
+    if ! load_template; then
+        log_error "Could not load template config"
+        return 1
+    fi
+
+    kernel_default_cmdline=($(get_kernel_cmdline "${subvol_current}"))
+    if [[ ${#kernel_default_cmdline[@]} == 0 ]]; then
+        return 1
+    fi
+
+    if [ -z "${TEMPLATE_LABEL_DEFAULT}" ]; then
+        log_error "Empty template label"
+        return 1
+    fi
+
+    kernel_default_options="${kernel_default_cmdline[*]}"
+
+    log_info "Generating ${TEMPLATE_LABEL_DEFAULT} config"
+
+    tmp_file="/tmp/refind_btrfs.conf"
+    :> ${tmp_file}
+
+    local line_icon=
+    if [[ $CONFIG_REFIND_USE_ICON_HINT == true ]]; then
+        local ids=(${OS_ID})
+        if [ -n "${OS_ID_LIKE}" ]; then
+            ids+=(${OS_ID_LIKE})
+        fi
+
+        ids=$(IFS=, ; echo "${ids[*]}")
+        line_icon="
+    icon_hint ${ids}"
+    else
+        icons_file="os_${TEMPLATE_NAME}.png"
+        if [ -n "${CONFIG_REFIND_THEME}" -a -e "${DIR_ESP}${CONFIG_ESP_DIR_REFIND}/themes/${CONFIG_REFIND_THEME}/theme.conf" ]; then
+            icons_dir="${CONFIG_ESP_DIR_REFIND}/$(grep "^icons_dir" "${DIR_ESP}${CONFIG_ESP_DIR_REFIND}/themes/${CONFIG_REFIND_THEME}/theme.conf" | awk '{print $2}')"
+        fi
+
+        if [[ -z $icons_dir || ! -f "${DIR_ESP}${icons_dir}/${icons_file}" ]]; then
+            icons_dir="${CONFIG_ESP_DIR_REFIND}/icons"
+        fi
+
+        if [ -f "${DIR_ESP}${icons_dir}/${icons_file}" ]; then
+            line_icon="
+    icon ${icons_dir}/${icons_file}"
+        fi
+    fi
+
+    local line_loader="
+    loader   ${kernel_default_file}"
+    local line_initrd=
+    if [ -n "${kernel_default_initrd}" ]; then
+        line_initrd="
+    initrd   ${kernel_default_initrd}"
+    fi
+    local line_options="
+    options \"${kernel_default_options}\""
+
+    if [ -d "${DIR_ESP}${TEMPLATE_UKI_DIR}" ]; then
+        tee -a "${tmp_file}" <<EOF > /dev/null
+dont_scan_dirs +,ESP:${TEMPLATE_UKI_DIR}
+EOF
+    fi
+
+    log_info "Adding default kernel ${kernel_default}"
+    tee -a "${tmp_file}" <<EOF > /dev/null
+menuentry "${TEMPLATE_LABEL_DEFAULT}" {${line_icon}${line_loader}${line_initrd}${line_options}
+    graphics on
+EOF
+
+    for menu in ${TEMPLATE_MENU_ORDER}; do
+        case "$menu" in
+            kernels) add_menu_kernels ;;
+            snapshots) add_menu_snapshots ;;
+            singleuser) add_menu_singleuser ;;
+            minimal) add_menu_minimal ;;
+            *) log_warning "Unknown menu option $menu" ;;
+        esac
+    done
+
+    tee -a "${tmp_file}" <<EOF > /dev/null
+}
+EOF
+
+    mkdir -p "$(dirname "${conf_file}")"
+    cp "${tmp_file}" "${conf_file}"
+    rm -f "${tmp_file}"
+
+    refind_conf_file="${DIR_ESP}${CONFIG_ESP_DIR_REFIND}/refind.conf"
+    if [ -f "${refind_conf_file}" ]; then
+        if ! grep -q "^include ${TEMPLATE_CONF_FILE}" "${refind_conf_file}"; then
+            log_info "Adding ${TEMPLATE_NAME} to refind.conf"
+            tee -a "${refind_conf_file}" <<EOF > /dev/null
+# ${TEMPLATE_LABEL_DEFAULT}
+include ${TEMPLATE_CONF_FILE}
+EOF
+        fi
+    fi
+
+    return 0
+}
+
+do_help() {
+    echo "Usage: refindsnapper [command]"
+    echo "Command:"
+    echo " [empty]/update - Update/Create loader"
+    echo " install - Install refindsnapper"
+}
+
+do_update_loader() {
+    result=0
+    # Only update if we're booted in a read-write state, since we're most likely booted into a snapshot otherwise
+    if [[ $(btrfs property get / ro) != "ro=true" ]]; then
+        if mount_esp; then
+            update_loader
+            result=$?
+            mount_esp false
+        else
+            result=1
+        fi
+    else
+        log_info "Booted in snapshot, ignoring"
+        result=0
+    fi
+
+    return $result
+}
+
+do_install() {
+    log_info "Creating config"
+    mkdir -p /etc/refindsnapper
+    cp -r conf/* /etc/refindsnapper/
+
+    log_info "Copying executable"
+    cp refindsnapper /usr/bin/refindsnapper
+    chmod a+x /usr/bin/refindsnapper
+
+    log_info "Creating kernel config"
+    mkdir -p /etc/kernel
+    if [ ! -f "/etc/kernel/install.conf" ]; then
+        echo "layout=bls" > /etc/kernel/install.conf
+        echo "initrd_generator=dracut" >> /etc/kernel/install.conf
+    fi
+
+    cp kernel/install.d/50-dracut.install /etc/kernel/install.d/50-dracut.install
+    chmod a+x /etc/kernel/install.d/50-dracut.install
+    cp kernel/install.d/99-refindsnapper.install /etc/kernel/install.d/99-refindsnapper.install
+    chmod a+x /etc/kernel/install.d/99-refindsnapper.install
+
+    log_info "Updating kernel cmdline"
+    if [ ! -f /etc/kernel/cmdline ]; then
+        cp kernel/cmdline /etc/kernel/cmdline
+    fi
+    if ! grep -q "root=" /etc/kernel/cmdline; then
+        uuid="$(findmnt -nf -o uuid /)"
+        echo -n "root=UUID=${uuid} " > /etc/kernel/cmdline
+        cat kernel/cmdline >> /etc/kernel/cmdline
+    fi
+
+    if [ -d "/etc/snapper" ]; then
+        log_info "Creating snapper config"
+        if [ ! -f "/etc/snapper/configs/root" ]; then
+            cp extra/snapper/configs/root /etc/snapper/configs/root
+            chown root:root /etc/snapper/configs/root
+            chmod 0640 /etc/snapper/configs/root
+        fi
+
+        mkdir -p /usr/lib/snapper/plugins
+        cp extra/snapper/plugins/* /usr/lib/snapper/plugins/
+    fi
+
+    if [ -d "/etc/dracut.conf.d" ]; then
+        log_info "Creating dracut config"
+        echo "compress=\"zstd\"" > /etc/dracut.conf.d/snapper.conf
+        echo "hostonly=\"yes\"" >> /etc/dracut.conf.d/snapper.conf
+    fi
+
+    if [ -d /usr/share/libalpm ]; then
+        log_info "Creating pacman hooks"
+        cp extra/libalpm/*.hook /usr/share/libalpm/hooks/
+        cp extra/libalpm/kernel-install /usr/share/libalpm/scripts/
+        chmod +x /usr/share/libalpm/scripts/kernel-install
+    fi
+
+    log_info "Creating systemd service"
+    cp systemd/* /usr/lib/systemd/system/
+
+    systemctl daemon-reload
+    systemctl enable --now refindsnapper.path
+}
+
+load_config
+if [[ -n "$1" ]]; then
+    case "$1" in
+        update) do_update_loader ;;
+        install) do_install ;;
+        *) do_help ;;
+    esac
+else
+    do_update_loader
+    result=$?
+fi
+
+exit $result

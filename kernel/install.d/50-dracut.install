@@ -1,0 +1,104 @@
+#!/bin/bash
+
+BASE_DIRECTORY="/usr/lib/kernel/install.d"
+SCRIPT_NAME="$(basename "$0")"
+if [ -e "${BASE_DIRECTORY}/${SCRIPT_NAME}" ]; then
+    . "${BASE_DIRECTORY}/${SCRIPT_NAME}"
+    exit $?
+fi
+
+COMMAND="${1:?}"
+KERNEL_VERSION="${2:?}"
+#shellcheck disable=SC2034
+BOOT_DIR_ABS="$3"
+KERNEL_IMAGE="$4"
+BOOT_ROOT="$KERNEL_INSTALL_BOOT_ROOT"
+
+# If the initrd was provided on the kernel command line, we shouldn't generate our own.
+if [[ "$COMMAND" != "add" || "$#" -gt 4 ]]; then
+    exit 0
+fi
+
+# Do not attempt to create initramfs if the supplied image is already a UKI
+if [[ "$KERNEL_INSTALL_IMAGE_TYPE" = "uki" ]]; then
+    exit 0
+fi
+
+UEFI_OPTS=()
+if [[ "${KERNEL_INSTALL_INITRD_GENERATOR:-dracut}" = "dracut" ]]; then
+    # We are the initrd generator
+    IMAGE="initrd"
+    UEFI_OPTS=("--no-uefi")
+else
+    exit 0
+fi
+
+if [[ "$KERNEL_INSTALL_UKI_GENERATOR" = "dracut" ]]; then
+    # We are chosen to generate the UKI as well as initrd
+    IMAGE="uki.efi"
+    UEFI_OPTS=("--uefi")
+fi
+
+if [[ -f ${KERNEL_IMAGE%/*}/$IMAGE ]]; then
+    # we found an initrd or uki.efi at the same place as the kernel
+    # use this and don't generate a new one
+    [[ $KERNEL_INSTALL_VERBOSE == 1 ]] && echo \
+        "There is an $IMAGE image at the same place as the kernel, skipping generating a new one"
+    cp --reflink=auto "${KERNEL_IMAGE%/*}/$IMAGE" "$KERNEL_INSTALL_STAGING_AREA/$IMAGE" \
+        && chown root:root "$KERNEL_INSTALL_STAGING_AREA/$IMAGE" \
+        && chmod 0600 "$KERNEL_INSTALL_STAGING_AREA/$IMAGE" \
+        && exit 0
+fi
+
+if [ -n "$KERNEL_INSTALL_CONF_ROOT" ]; then
+    if [ -f "$KERNEL_INSTALL_CONF_ROOT/cmdline" ]; then
+        read -r -d '' -a BOOT_OPTIONS < "$KERNEL_INSTALL_CONF_ROOT/cmdline"
+    fi
+elif [[ -f /etc/kernel/cmdline ]]; then
+    read -r -d '' -a BOOT_OPTIONS < /etc/kernel/cmdline
+elif [[ -f /usr/lib/kernel/cmdline ]]; then
+    read -r -d '' -a BOOT_OPTIONS < /usr/lib/kernel/cmdline
+else
+    declare -a BOOT_OPTIONS
+
+    read -r -d '' -a line < /proc/cmdline
+    for i in "${line[@]}"; do
+        [[ ${i#initrd=*} != "$i" ]] && continue
+        BOOT_OPTIONS+=("$i")
+    done
+fi
+
+have_root=false
+for ((i = 0; i < "${#BOOT_OPTIONS[@]}"; i++)); do
+    # shellcheck disable=SC1001
+    if [[ ${BOOT_OPTIONS[$i]} == *root\=* ]]; then
+        have_root=true
+        break
+    fi
+done
+
+if [[ $have_root == false ]]; then
+    uuid="$(findmnt -nf -o uuid /)"
+    BOOT_OPTIONS+=("root=UUID=${uuid}")
+fi
+
+test -e /etc/os-release && os_release='/etc/os-release' || os_release='/usr/lib/os-release'
+. "${os_release}"
+
+if [ -e "/usr/share/systemd/bootctl/splash-${ID}.bmp" ]; then
+    UEFI_OPTS+=(--uefi-splash-image "/usr/share/systemd/bootctl/splash-${ID}.bmp")
+fi
+
+IMAGE_FILE="$KERNEL_INSTALL_STAGING_AREA/$IMAGE"
+
+# shellcheck disable=SC2046
+dracut -f \
+    $([[ $KERNEL_INSTALL_VERBOSE == 1 ]] && echo --verbose) \
+    ${UEFI_OPTS[*]} \
+    -H --hostonly-cmdline \
+    --kver "$KERNEL_VERSION" \
+    --kernel-cmdline "${BOOT_OPTIONS[*]}" \
+    $([[ -n $KERNEL_IMAGE ]] && echo --kernel-image "$KERNEL_IMAGE") \
+    --compress zstd \
+    --add "resume" \
+    "$IMAGE_FILE" || exit 1

@@ -1,0 +1,43 @@
+#!/bin/bash
+
+shopt -s extglob nullglob
+set -e
+
+# check whether it's a transactional system
+is_transactional()
+{
+	[ "$(stat -f -c %T /etc)" = "overlayfs" ]
+}
+
+modify_snapshot()
+{
+	local path="$1"
+	local fs="$2"
+	local num="$3"
+
+	[ "$fs" = btrfs ] || return 1
+	is_transactional && return 0
+
+	systemctl restart refindsnapper.service &
+}
+
+h()
+{
+	echo "Available commands:"
+	echo "${!commands[@]}"
+}
+
+declare -A commands
+
+commands['create-snapshot-post']=modify_snapshot
+commands['modify-snapshot-post']=modify_snapshot
+commands['delete-snapshot-post']=modify_snapshot
+commands['set-default-snapshot-post']=modify_snapshot
+commands['help']=h
+
+cmd="$1"
+shift
+[ -n "$cmd" ] || cmd=help
+if [ "${#commands[$cmd]}" -gt 0 ]; then
+	${commands[$cmd]} "$@"
+fi
