@@ -655,7 +655,7 @@ do_help() {
     echo "Usage: refindsnapper [command]
 Command:
  [empty]/update - Update/Create loader
- install [uki|bls] - Install refindsnapper using the specified layout, defaults to bls"
+ install [uki|bls] - Install refindsnapper using the specified layout, defaults to bls if not already specified"
 }
 
 do_update_loader() {
@@ -678,8 +678,21 @@ do_update_loader() {
 }
 
 do_update_layout() {
-    local layout=${1:-bls}
+    local layout=${1}
     local install=${2:-false}
+    log_debug "do_update_layout: ${layout} ${install}"
+
+    if [ -z "${layout}" ]; then
+        if [ -e "/etc/kernel/install.conf" ]; then
+            output=$(grep "^layout=" /etc/kernel/install.conf)
+            layout=${output#layout\=}
+        fi
+    fi
+
+    if [[ $layout != "bls" && $layout != "uki" ]]; then
+        layout="bls"
+    fi
+
     if ! grep -q "layout=${layout}" /etc/kernel/install.conf; then
         log_info "Switching layout, need to re-create kernel(s)"
         for i in $(ls -1 /usr/lib/modules/); do kernel-install remove "$i"; done
@@ -699,7 +712,7 @@ do_update_layout() {
 }
 
 do_install() {
-    local kernel_layout=${1:-bls}
+    local kernel_layout=${1}
 
     log_info "Creating config"
     mkdir -p /etc/refindsnapper
@@ -762,7 +775,7 @@ do_install() {
     systemctl restart refindsnapper
 
     log_info "Updating kernel layout"
-    do_update_layout ${kernel_layout} true
+    do_update_layout "${kernel_layout}" true
 }
 
 if ! load_config; then
