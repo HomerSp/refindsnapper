@@ -1,12 +1,5 @@
 #!/bin/bash
 
-BASE_DIRECTORY="/usr/lib/kernel/install.d"
-SCRIPT_NAME="$(basename "$0")"
-if [ -e "${BASE_DIRECTORY}/${SCRIPT_NAME}" ]; then
-    . "${BASE_DIRECTORY}/${SCRIPT_NAME}"
-    exit $?
-fi
-
 COMMAND="${1:?}"
 KERNEL_VERSION="${2:?}"
 #shellcheck disable=SC2034
@@ -94,7 +87,7 @@ IMAGE_FILE="$KERNEL_INSTALL_STAGING_AREA/$IMAGE"
 # shellcheck disable=SC2046
 dracut -f \
     $([[ $KERNEL_INSTALL_VERBOSE == 1 ]] && echo --verbose) \
-    ${UEFI_OPTS[*]} \
+    ${UEFI_OPTS[@]} \
     -H --hostonly-cmdline \
     --kver "$KERNEL_VERSION" \
     --kernel-cmdline "${BOOT_OPTIONS[*]}" \
