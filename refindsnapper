@@ -645,10 +645,10 @@ EOF
 }
 
 do_help() {
-    echo "Usage: refindsnapper [command]"
-    echo "Command:"
-    echo " [empty]/update - Update/Create loader"
-    echo " install - Install refindsnapper"
+    echo "Usage: refindsnapper [command]
+Command:
+ [empty]/update - Update/Create loader
+ install - Install refindsnapper"
 }
 
 do_update_loader() {
@@ -710,7 +710,7 @@ do_install() {
         fi
 
         mkdir -p /usr/lib/snapper/plugins
-        cp extra/snapper/plugins/* /usr/lib/snapper/plugins/
+        cp snapper/plugins/11-refindsnapper.snapper /usr/lib/snapper/plugins/
     fi
 
     if [ -d "/etc/dracut.conf.d" ]; then
