@@ -722,12 +722,6 @@ do_install() {
     cp refindsnapper /usr/bin/refindsnapper
     chmod a+x /usr/bin/refindsnapper
 
-    if [ -d "/etc/dracut.conf.d" ]; then
-        log_info "Creating dracut config"
-        echo "compress=\"zstd\"" > /etc/dracut.conf.d/snapper.conf
-        echo "hostonly=\"yes\"" >> /etc/dracut.conf.d/snapper.conf
-    fi
-
     log_info "Updating kernel cmdline"
     if [ ! -f /etc/kernel/cmdline ]; then
         cp kernel/cmdline /etc/kernel/cmdline
