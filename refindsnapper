@@ -102,6 +102,11 @@ parse_config_file() {
     local file="${1}"
     local prefix="${2:-}"
 
+    if [ ! -e "${file}" ]; then
+        log_error "Could not find config file ${file}"
+        return 1
+    fi
+
     if [ -n "${prefix}" ]; then
         while IFS='= ' read -r lhs rhs  || [[ -n "$lhs" ]]
         do
@@ -116,6 +121,7 @@ parse_config_file() {
     fi
 
     log_debug "parse_config_file: ${file}"
+    return 0
 }
 
 load_template() {
@@ -159,6 +165,7 @@ load_template() {
 load_config() {
     [ -e "${PWD}/conf/config.conf" ] && CONFIG_DIR="${PWD}/conf" || CONFIG_DIR="/etc/refindsnapper"
     parse_config_file "${CONFIG_DIR}/config.conf"
+    return $?
 }
 
 wait_file() {
@@ -648,7 +655,7 @@ do_help() {
     echo "Usage: refindsnapper [command]
 Command:
  [empty]/update - Update/Create loader
- install - Install refindsnapper"
+ install [uki|bls] - Install refindsnapper using the specified layout, defaults to bls"
 }
 
 do_update_loader() {
@@ -670,7 +677,30 @@ do_update_loader() {
     return $result
 }
 
+do_update_layout() {
+    local layout=${1:-bls}
+    local install=${2:-false}
+    if ! grep -q "layout=${layout}" /etc/kernel/install.conf; then
+        log_info "Switching layout, need to re-create kernel(s)"
+        for i in $(ls -1 /usr/lib/modules/); do kernel-install remove "$i"; done
+
+        echo "layout=${layout}" > /etc/kernel/install.conf
+        echo "initrd_generator=dracut" >> /etc/kernel/install.conf
+        if [[ "${layout}" == "uki" ]]; then
+            echo "uki_generator=dracut" >> /etc/kernel/install.conf
+        fi
+
+        kernel-install add-all
+    fi
+
+    if [[ ${install} == false ]]; then
+        systemctl restart refindsnapper
+    fi
+}
+
 do_install() {
+    local kernel_layout=${1:-bls}
+
     log_info "Creating config"
     mkdir -p /etc/refindsnapper
     cp -r conf/* /etc/refindsnapper/
@@ -679,17 +709,11 @@ do_install() {
     cp refindsnapper /usr/bin/refindsnapper
     chmod a+x /usr/bin/refindsnapper
 
-    log_info "Creating kernel config"
-    mkdir -p /etc/kernel
-    if [ ! -f "/etc/kernel/install.conf" ]; then
-        echo "layout=bls" > /etc/kernel/install.conf
-        echo "initrd_generator=dracut" >> /etc/kernel/install.conf
+    if [ -d "/etc/dracut.conf.d" ]; then
+        log_info "Creating dracut config"
+        echo "compress=\"zstd\"" > /etc/dracut.conf.d/snapper.conf
+        echo "hostonly=\"yes\"" >> /etc/dracut.conf.d/snapper.conf
     fi
-
-    cp kernel/install.d/50-dracut.install /etc/kernel/install.d/50-dracut.install
-    chmod a+x /etc/kernel/install.d/50-dracut.install
-    cp kernel/install.d/99-refindsnapper.install /etc/kernel/install.d/99-refindsnapper.install
-    chmod a+x /etc/kernel/install.d/99-refindsnapper.install
 
     log_info "Updating kernel cmdline"
     if [ ! -f /etc/kernel/cmdline ]; then
@@ -701,6 +725,14 @@ do_install() {
         cat kernel/cmdline >> /etc/kernel/cmdline
     fi
 
+    log_info "Creating kernel config"
+    mkdir -p /etc/kernel/install.d
+
+    cp kernel/install.d/50-dracut.install /etc/kernel/install.d/50-dracut.install
+    chmod a+x /etc/kernel/install.d/50-dracut.install
+    cp kernel/install.d/99-refindsnapper-restart.install /etc/kernel/install.d/99-refindsnapper-restart.install
+    chmod a+x /etc/kernel/install.d/99-refindsnapper-restart.install
+
     if [ -d "/etc/snapper" ]; then
         log_info "Creating snapper config"
         if [ ! -f "/etc/snapper/configs/root" ]; then
@@ -711,12 +743,6 @@ do_install() {
 
         mkdir -p /usr/lib/snapper/plugins
         cp snapper/plugins/11-refindsnapper.snapper /usr/lib/snapper/plugins/
-    fi
-
-    if [ -d "/etc/dracut.conf.d" ]; then
-        log_info "Creating dracut config"
-        echo "compress=\"zstd\"" > /etc/dracut.conf.d/snapper.conf
-        echo "hostonly=\"yes\"" >> /etc/dracut.conf.d/snapper.conf
     fi
 
     if [ -d /usr/share/libalpm ]; then
@@ -731,18 +757,30 @@ do_install() {
 
     systemctl daemon-reload
     systemctl enable --now refindsnapper.path
+
+    log_info "Creating initial loader"
+    systemctl restart refindsnapper
+
+    log_info "Updating kernel layout"
+    do_update_layout ${kernel_layout} true
 }
 
-load_config
+if ! load_config; then
+    exit $?
+fi
+
 if [[ -n "$1" ]]; then
-    case "$1" in
-        update) do_update_loader ;;
-        install) do_install ;;
+    cmd="$1"
+    shift
+    case "$cmd" in
+        update) do_update_loader "$@" ;;
+        install) do_install "$@" ;;
+        uki) do_update_layout uki ;;
+        bls) do_update_layout bls ;;
         *) do_help ;;
     esac
 else
-    do_update_loader
-    result=$?
+    do_update_loader "$@"
 fi
 
-exit $result
+exit $?
