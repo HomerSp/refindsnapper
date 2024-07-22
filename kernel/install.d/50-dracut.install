@@ -62,9 +62,8 @@ else
 fi
 
 have_root=false
-for ((i = 0; i < "${#BOOT_OPTIONS[@]}"; i++)); do
-    # shellcheck disable=SC1001
-    if [[ ${BOOT_OPTIONS[$i]} == *root\=* ]]; then
+for c in ${BOOT_OPTIONS[@]}; do
+    if [[ $c == root\=* ]]; then
         have_root=true
         break
     fi
@@ -78,7 +77,7 @@ fi
 test -e /etc/os-release && os_release='/etc/os-release' || os_release='/usr/lib/os-release'
 . "${os_release}"
 
-if [ -e "/usr/share/systemd/bootctl/splash-${ID}.bmp" ]; then
+if [[ -e "/usr/share/systemd/bootctl/splash-${ID}.bmp" && "$KERNEL_INSTALL_UKI_GENERATOR" = "dracut" ]]; then
     UEFI_OPTS+=(--uefi-splash-image "/usr/share/systemd/bootctl/splash-${ID}.bmp")
 fi
 
