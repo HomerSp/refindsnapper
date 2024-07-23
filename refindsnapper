@@ -183,7 +183,7 @@ find_kernel() {
     local path="$3"
     local ret=
     if [ -n "${template}" ]; then
-        if [ -f "${DIR_ESP}${TEMPLATE_UKI_DIR}/${template}.efi" -o -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${template}" ]; then
+        if [ -f "${DIR_ESP}${TEMPLATE_UKI_DIR}/${TEMPLATE_UKI_PREFIX}${template}.efi" -o -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${template}" ]; then
             ret="${template}"
         fi
     fi
@@ -208,13 +208,15 @@ find_kernel() {
     if [[ -n "$path" && -z "${ret}" ]]; then
         local kernels=($(ls -1 "${path}/usr/lib/modules/" | sort -fVr))
         for k in "${kernels[@]}"; do
-            if [ -f "${DIR_ESP}${TEMPLATE_UKI_DIR}/${k}.efi" -o -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${k}" ]; then
+            log_debug "${DIR_ESP}${TEMPLATE_UKI_DIR}/${TEMPLATE_UKI_PREFIX}${k}.efi ${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${k}"
+            if [ -f "${DIR_ESP}${TEMPLATE_UKI_DIR}/${TEMPLATE_UKI_PREFIX}${k}.efi" -o -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${k}" ]; then
                 ret="${k}"
                 break
             fi
         done
     fi
 
+    log_debug "find_kernel: ${ret}"
     echo "$ret"
     return 0
 }
