@@ -208,7 +208,6 @@ find_kernel() {
     if [[ -n "$path" && -z "${ret}" ]]; then
         local kernels=($(ls -1 "${path}/usr/lib/modules/" | sort -fVr))
         for k in "${kernels[@]}"; do
-            log_debug "${DIR_ESP}${TEMPLATE_UKI_DIR}/${TEMPLATE_UKI_PREFIX}${k}.efi ${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${k}"
             if [ -f "${DIR_ESP}${TEMPLATE_UKI_DIR}/${TEMPLATE_UKI_PREFIX}${k}.efi" -o -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${k}" ]; then
                 ret="${k}"
                 break
@@ -284,12 +283,12 @@ get_kernel_cmdline() {
     done
 
     if [ -z "${cmdline_root}" ]; then
-        local uuid="$(findmnt -nf -o uuid /)"
-        cmdline_root="UUID=${uuid}"
+        local uuid="$(findmnt -nf -o partuuid /)"
+        cmdline_root="PARTUUID=${uuid}"
     fi
 
     if [[ $CONFIG_VALIDATE_ROOT_UUID == true ]]; then
-        local uuid="$(findmnt -nf -o uuid ${cmdline_root})"
+        local uuid="$(findmnt -nf -o partuuid ${cmdline_root})"
         if [ -z "${uuid}" ]; then
             log_warning "Could not find root ${cmdline_root} for ${subvol}"
             return 1
@@ -732,9 +731,10 @@ do_install() {
     if [ ! -f /etc/kernel/cmdline ]; then
         cp kernel/cmdline /etc/kernel/cmdline
     fi
-    if ! grep -q "root=" /etc/kernel/cmdline; then
-        uuid="$(findmnt -nf -o uuid /)"
-        echo -n "root=UUID=${uuid} " > /etc/kernel/cmdline
+    if ! grep -q "root=PARTUUID=" /etc/kernel/cmdline; then
+        log_info "Adding root to cmdline"
+        uuid="$(findmnt -nf -o partuuid /)"
+        echo -n "root=PARTUUID=${uuid} " > /etc/kernel/cmdline
         cat kernel/cmdline >> /etc/kernel/cmdline
     fi
 
