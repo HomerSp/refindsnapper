@@ -2,6 +2,7 @@
 Description=Monitors for new snapshots
 
 [Path]
+PathChanged=/.snapshots
 PathChanged=/efi/loader/entries
 
 [Install]
