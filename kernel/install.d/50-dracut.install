@@ -61,19 +61,6 @@ else
     done
 fi
 
-have_root=false
-for c in ${BOOT_OPTIONS[@]}; do
-    if [[ $c == root\=* ]]; then
-        have_root=true
-        break
-    fi
-done
-
-if [[ $have_root == false ]]; then
-    uuid="$(findmnt -nf -o uuid /)"
-    BOOT_OPTIONS+=("root=UUID=${uuid}")
-fi
-
 test -e /etc/os-release && os_release='/etc/os-release' || os_release='/usr/lib/os-release'
 . "${os_release}"
 
