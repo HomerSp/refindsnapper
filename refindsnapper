@@ -731,7 +731,22 @@ do_install() {
     if [ ! -f /etc/kernel/cmdline ]; then
         cp kernel/cmdline /etc/kernel/cmdline
     fi
-    if ! grep -q "root=PARTUUID=" /etc/kernel/cmdline; then
+
+    local uuid="$(findmnt -nf -o partuuid /)"
+    local have_root=true
+    if ! grep -q "root=PARTUUID=${uuid}" /etc/kernel/cmdline; then
+        if grep -q "root=" /etc/kernel/cmdline; then
+            log_info "Found incompatible root in cmdline, update? <y/N>"
+            read update
+            if [[ "$update" == "y" ]]; then
+                have_root=false
+            fi
+        else
+            have_root=false
+        fi
+    fi
+
+    if [[ $have_root == false ]]; then
         log_info "Adding root to cmdline"
         uuid="$(findmnt -nf -o partuuid /)"
         echo -n "root=PARTUUID=${uuid} " > /etc/kernel/cmdline
