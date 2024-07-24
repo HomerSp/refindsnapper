@@ -656,7 +656,9 @@ do_help() {
     echo "Usage: refindsnapper [command]
 Command:
  [empty]/update - Update/Create loader
- install [uki|bls] - Install refindsnapper using the specified layout, defaults to bls if not already specified"
+ install - Install refindsnapper using the specified layout, defaults to bls if not already specified
+    -l <kernel layout> - one of bls or uki
+    -f - force install"
 }
 
 do_update_loader() {
@@ -698,7 +700,14 @@ do_update_layout() {
         touch /etc/kernel/install.conf
     fi
 
-    if ! grep -q "layout=${layout}" /etc/kernel/install.conf; then
+    local recreate=false
+    if [[ ${options["force"]} == true ]]; then
+        recreate=true
+    elif ! grep -q "layout=${layout}" /etc/kernel/install.conf; then
+        recreate=true
+    fi
+
+    if [[ $recreate == true ]]; then
         log_info "Switching layout, need to re-create kernel(s)"
         for i in $(ls -1 /usr/lib/modules/); do kernel-install remove "$i"; done
 
@@ -717,8 +726,6 @@ do_update_layout() {
 }
 
 do_install() {
-    local kernel_layout=${1}
-
     log_info "Creating config"
     mkdir -p /etc/refindsnapper
     cp -r conf/* /etc/refindsnapper/
@@ -732,18 +739,22 @@ do_install() {
         cp kernel/cmdline /etc/kernel/cmdline
     fi
 
-    local uuid="$(findmnt -nf -o partuuid /)"
     local have_root=true
-    if ! grep -q "root=PARTUUID=${uuid}" /etc/kernel/cmdline; then
-        if grep -q "root=" /etc/kernel/cmdline; then
-            log_info "Found incompatible root in cmdline, update? <y/N>"
-            read update
-            if [[ "$update" == "y" ]]; then
+    if [[ ${options["force"]} != true ]]; then
+        local uuid="$(findmnt -nf -o partuuid /)"
+        if ! grep -q "root=PARTUUID=${uuid}" /etc/kernel/cmdline; then
+            if grep -q "root=" /etc/kernel/cmdline; then
+                log_info "Found incompatible root in cmdline, update? <y/N>"
+                read update
+                if [[ "$update" == "y" ]]; then
+                    have_root=false
+                fi
+            else
                 have_root=false
             fi
-        else
-            have_root=false
         fi
+    else
+        have_root=false
     fi
 
     if [[ $have_root == false ]]; then
@@ -793,8 +804,32 @@ do_install() {
     systemctl restart refindsnapper
 
     log_info "Updating kernel layout"
-    do_update_layout "${kernel_layout}" true
+    do_update_layout "${options["layout"]}" true
 }
+
+declare -A options
+while getopts ":fl:h" opt; do
+    case ${opt} in
+    f)
+        options["force"]=true;
+        ;;
+    l)
+        options["layout"]="${OPTARG}"
+        ;;
+    :)
+        log_error "Option -${OPTARG} requires an argument"
+        ;;
+    ? | h)
+        if [[ "${opt}" != "h" ]]; then
+            log_error "Unknown option ${opt}"
+        fi
+
+        do_help
+        exit 1 ;;
+    esac
+done
+
+shift $((OPTIND-1))
 
 if ! load_config; then
     exit $?
@@ -804,14 +839,14 @@ if [[ -n "$1" ]]; then
     cmd="$1"
     shift
     case "$cmd" in
-        update) do_update_loader "$@" ;;
-        install) do_install "$@" ;;
+        update) do_update_loader ;;
+        install) do_install ;;
         uki) do_update_layout uki ;;
         bls) do_update_layout bls ;;
         *) do_help ;;
     esac
 else
-    do_update_loader "$@"
+    do_update_loader
 fi
 
 exit $?
