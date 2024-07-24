@@ -808,13 +808,16 @@ do_install() {
 }
 
 declare -A options
-while getopts ":fl:h" opt; do
+while getopts ":fl:vh" opt; do
     case ${opt} in
     f)
         options["force"]=true;
         ;;
     l)
         options["layout"]="${OPTARG}"
+        ;;
+    v)
+        options["verbose"]=true;
         ;;
     :)
         log_error "Option -${OPTARG} requires an argument"
@@ -833,6 +836,10 @@ shift $((OPTIND-1))
 
 if ! load_config; then
     exit $?
+fi
+
+if [[ ${options["verbose"]} == true ]]; then
+    CONFIG_LOG_DEBUG=true
 fi
 
 if [[ -n "$1" ]]; then
