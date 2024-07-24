@@ -453,9 +453,9 @@ add_menu_snapshots() {
             continue
         fi
 
-        KERNEL="${kernel_snapshot}"
-        NUMBER="${number}"
-        TYPE="${type}"
+        SNAPSHOT_KERNEL="${kernel_snapshot}"
+        SNAPSHOT_NUMBER="${number}"
+        SNAPSHOT_TYPE="${type}"
         if ! load_template "${path}"; then
             log_warning "Could not load snapshot template"
             continue
