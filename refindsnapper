@@ -201,14 +201,24 @@ find_kernel() {
         ret="${default_kernels[0]}"
     fi
 
-    if [[ -n "${ret}" && ! -f "${path}/usr/lib/modules/${ret}/vmlinuz" ]]; then
+    if [[ -n "${ret}" && ! -d "${path}/usr/lib/modules/${ret}/kernel" ]]; then
         ret=""
     fi
 
     if [[ -n "$path" && -z "${ret}" ]]; then
         local kernels=($(ls -1 "${path}/usr/lib/modules/" | sort -fVr))
         for k in "${kernels[@]}"; do
-            if [ -f "${DIR_ESP}${TEMPLATE_UKI_DIR}/${TEMPLATE_UKI_PREFIX}${k}.efi" -o -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${k}" ]; then
+            if [ ! -d "${PATH}/usr/lib/modules/${k}/kernel" ]; then
+                continue
+            fi
+
+            if [ -f "${DIR_ESP}${TEMPLATE_UKI_DIR}/${TEMPLATE_UKI_PREFIX}${k}.efi" ]; then
+                ret="${k}"
+                break
+            elif [[ ${TEMPLATE_KERNEL_DIR_FLAT} != true && -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${k}" ]]; then
+                ret="${k}"
+                break
+            elif [[ ${TEMPLATE_KERNEL_DIR_FLAT} == true && -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}" ]]; then
                 ret="${k}"
                 break
             fi
@@ -229,11 +239,21 @@ get_kernel_file() {
     fi
 
     if [[ "${TEMPLATE_UKI_PREFERRED}" != true || -z "${path}" ]]; then
-        if [ -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}" ]; then
-            local found_path="$(find "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}" -maxdepth 1 -name "${TEMPLATE_LINUX_FILE}*" -exec ls -t1 {} \+ | head -1)"
+        if [ -n "${TEMPLATE_KERNEL_NAME_REGEX}" ]; then
+            if [[ $file =~ ${TEMPLATE_KERNEL_NAME_REGEX} ]]; then
+                for reg in ${TEMPLATE_KERNEL_NAME_MATCH[@]}; do
+                    local split=($(IFS=: ; echo ${reg}))
+                    TEMPLATE_LINUX_FILE=${TEMPLATE_LINUX_FILE//\{${split[1]}\}/${BASH_REMATCH[${split[0]}]}}
+                done
+            fi
+        fi
+
+        [[ ${TEMPLATE_KERNEL_DIR_FLAT} == true ]] && local base_path="${TEMPLATE_KERNEL_DIR}" || local base_path="${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}"
+        if [ -d "${DIR_ESP}${base_path}" ]; then
+            local found_path="$(find "${DIR_ESP}${base_path}" -maxdepth 1 -name "${TEMPLATE_LINUX_FILE}*" -exec ls -t1 {} \+ | head -1)"
             local linux_file="$(basename "${found_path}")"
             if [ -n "${linux_file}" ]; then
-                path="${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}/${linux_file}"
+                path="${base_path}/${linux_file}"
                 need_initrd=1
             fi
         fi
@@ -248,11 +268,22 @@ get_initrd_file() {
     local file="$1"
     local ret=
 
-    if [ -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}" ]; then
-        local found_path="$(find "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}" -maxdepth 1 -name "${TEMPLATE_INITRD_FILE}*" -exec ls -t1 {} \+ | head -1)"
+    if [ -n "${TEMPLATE_KERNEL_NAME_REGEX}" ]; then
+        if [[ $file =~ ${TEMPLATE_KERNEL_NAME_REGEX} ]]; then
+            for reg in ${TEMPLATE_KERNEL_NAME_MATCH[@]}; do
+                local split=($(IFS=: ; echo ${reg}))
+                TEMPLATE_INITRD_FILE=${TEMPLATE_INITRD_FILE//\{${split[1]}\}/${BASH_REMATCH[${split[0]}]}}
+            done
+        fi
+    fi
+
+    [[ ${TEMPLATE_KERNEL_DIR_FLAT} == true ]] && local base_path="${TEMPLATE_KERNEL_DIR}" || local base_path="${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}"
+    if [ -d "${DIR_ESP}${base_path}" ]; then
+        local found_path="$(find "${DIR_ESP}${base_path}" -maxdepth 1 -name "${TEMPLATE_INITRD_FILE}*" -exec ls -t1 {} \+ | head -1)"
         local initrd_file="$(basename "${found_path}")"
         if [ -n "${initrd_file}" ]; then
-            ret="${TEMPLATE_KERNEL_DIR}/${TEMPLATE_KERNEL_PREFIX}${file}/${initrd_file}"
+            ret="${base_path}/${initrd_file}"
+            need_initrd=1
         fi
     fi
 
