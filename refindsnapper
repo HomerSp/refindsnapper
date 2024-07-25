@@ -208,7 +208,7 @@ find_kernel() {
     if [[ -n "$path" && -z "${ret}" ]]; then
         local kernels=($(ls -1 "${path}/usr/lib/modules/" | sort -fVr))
         for k in "${kernels[@]}"; do
-            if [ ! -d "${PATH}/usr/lib/modules/${k}/kernel" ]; then
+            if [ ! -d "${path}/usr/lib/modules/${k}/kernel" ]; then
                 continue
             fi
 
@@ -241,9 +241,10 @@ get_kernel_file() {
     if [[ "${TEMPLATE_UKI_PREFERRED}" != true || -z "${path}" ]]; then
         if [ -n "${TEMPLATE_KERNEL_NAME_REGEX}" ]; then
             if [[ $file =~ ${TEMPLATE_KERNEL_NAME_REGEX} ]]; then
+                local index=1
                 for reg in ${TEMPLATE_KERNEL_NAME_MATCH[@]}; do
-                    local split=($(IFS=: ; echo ${reg}))
-                    TEMPLATE_LINUX_FILE=${TEMPLATE_LINUX_FILE//\{${split[1]}\}/${BASH_REMATCH[${split[0]}]}}
+                    TEMPLATE_LINUX_FILE=${TEMPLATE_LINUX_FILE//\{${reg}\}/${BASH_REMATCH[${index}]}}
+                    ((++index))
                 done
             fi
         fi
@@ -270,9 +271,10 @@ get_initrd_file() {
 
     if [ -n "${TEMPLATE_KERNEL_NAME_REGEX}" ]; then
         if [[ $file =~ ${TEMPLATE_KERNEL_NAME_REGEX} ]]; then
+            local index=1
             for reg in ${TEMPLATE_KERNEL_NAME_MATCH[@]}; do
-                local split=($(IFS=: ; echo ${reg}))
-                TEMPLATE_INITRD_FILE=${TEMPLATE_INITRD_FILE//\{${split[1]}\}/${BASH_REMATCH[${split[0]}]}}
+                TEMPLATE_INITRD_FILE=${TEMPLATE_INITRD_FILE//\{${reg}\}/${BASH_REMATCH[${index}]}}
+                ((++index))
             done
         fi
     fi
