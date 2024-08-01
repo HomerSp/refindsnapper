@@ -834,7 +834,7 @@ do_install() {
     systemctl enable --now refindsnapper.path
 
     log_info "Creating initial loader"
-    systemctl restart refindsnapper
+    do_update_loader
 
     log_info "Updating kernel layout"
     do_update_layout "${options["layout"]}" true
