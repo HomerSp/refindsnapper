@@ -417,12 +417,13 @@ EOF
 }
 
 add_menu_kernels() {
-    for kernel in "${default_kernels[@]}"; do
-        if [[ "$kernel" == "$kernel_default" ]]; then
+    for KERNEL in "${default_kernels[@]}"; do
+        if [[ "$KERNEL" == "$kernel_default" ]]; then
             continue
         fi
 
-        submenu_add_kernel "${kernel}" "Kernel ${kernel}" "${kernel_default_options}"
+        local label="${TEMPLATE_LABEL_KERNEL:-${TEMPLATE_LABEL_DEFAULT}}"
+        submenu_add_kernel "${KERNEL}" "${label}" "${kernel_default_options}"
     done
 }
 
@@ -494,7 +495,7 @@ add_menu_snapshots() {
             continue
         fi
 
-        [[ -z "${TEMPLATE_LABEL_SNAPSHOT}" ]] && local label="${TEMPLATE_LABEL_DEFAULT}" || local label="${TEMPLATE_LABEL_SNAPSHOT}"
+        local label="${TEMPLATE_LABEL_SNAPSHOT:-${TEMPLATE_LABEL_DEFAULT}}"
         log_info "Adding ${label}"
 
         local line_loader=""
@@ -593,14 +594,15 @@ update_loader() {
         return 1
     fi
 
-    if [ -z "${TEMPLATE_LABEL_DEFAULT}" ]; then
+    local label="${TEMPLATE_LABEL_MAIN:-${TEMPLATE_LABEL_DEFAULT}}"
+    if [ -z "${label}" ]; then
         log_error "Empty template label"
         return 1
     fi
 
     kernel_default_options="${kernel_default_cmdline[*]}"
 
-    log_info "Generating ${TEMPLATE_LABEL_DEFAULT} config"
+    log_info "Generating ${label} config"
 
     tmp_file="/tmp/refind_btrfs.conf"
     :> ${tmp_file}
@@ -649,7 +651,7 @@ EOF
 
     log_info "Adding default kernel ${kernel_default}"
     tee -a "${tmp_file}" <<EOF > /dev/null
-menuentry "${TEMPLATE_LABEL_DEFAULT}" {${line_icon}${line_loader}${line_initrd}${line_options}
+menuentry "${label}" {${line_icon}${line_loader}${line_initrd}${line_options}
     graphics on
 EOF
 
@@ -676,7 +678,7 @@ EOF
         if ! grep -q "^include ${TEMPLATE_CONF_FILE}" "${refind_conf_file}"; then
             log_info "Adding ${TEMPLATE_NAME} to refind.conf"
             tee -a "${refind_conf_file}" <<EOF > /dev/null
-# ${TEMPLATE_LABEL_DEFAULT}
+# ${label}
 include ${TEMPLATE_CONF_FILE}
 EOF
         fi
