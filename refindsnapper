@@ -422,6 +422,8 @@ add_menu_kernels() {
             continue
         fi
 
+        load_template
+
         local label="${TEMPLATE_LABEL_KERNEL:-${TEMPLATE_LABEL_DEFAULT}}"
         submenu_add_kernel "${KERNEL}" "${label}" "${kernel_default_options}"
     done
