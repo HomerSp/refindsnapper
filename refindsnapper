@@ -538,6 +538,34 @@ add_menu_minimal() {
     submenu_add_kernel "${kernel_default}" "Minimal options" "${cmdline_minimal[*]}"
 }
 
+purge_old_kernels() {
+    if [[ ${TEMPLATE_KERNEL_DIR_FLAT} != true ]]; then
+        for i in $(cd "${DIR_ESP}${TEMPLATE_KERNEL_DIR}"; ls -1); do
+            if [ ! -d "/usr/lib/modules/${i}" ]; then
+                log_info "Purging non-existant kernel ${i}"
+                rm -rf "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${i}"
+            fi
+
+            for file in $(cd "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${i}"; ls -1); do
+                local search="${TEMPLATE_KERNEL_DIR}/${i}/${file}"
+                if [ -z "$(grep "${search}" /boot/efi/loader/entries/*)" ]; then
+                    log_info "Removing unused ${search} file"
+                    rm -f "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${i}/${file}"
+                fi
+            done
+        done
+
+        for entry in "${DIR_ESP}/loader/entries${TEMPLATE_KERNEL_DIR}-"*; do
+            local name="${entry#*${TEMPLATE_KERNEL_DIR}-}"
+            local kernel="$(echo "$name" | sed -r "s/(-[0-9]*)*\.conf$//")"
+            if [[ -n "${kernel}" && ! -d "/usr/lib/modules/${kernel}" ]]; then
+                log_info "Removing entry ${kernel}"
+                rm -f "${entry}"
+            fi
+        done
+    fi
+}
+
 update_loader() {
     snapshot_dir="${CONFIG_DIR_SNAPSHOTS}"
     if [ -z "${snapshot_dir}" -o ! -d "${snapshot_dir}" ]; then
@@ -590,6 +618,8 @@ update_loader() {
         log_error "Could not load template config"
         return 1
     fi
+
+    purge_old_kernels
 
     kernel_default_cmdline=($(get_kernel_cmdline "${subvol_current}"))
     if [[ ${#kernel_default_cmdline[@]} == 0 ]]; then
