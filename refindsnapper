@@ -540,25 +540,37 @@ add_menu_minimal() {
 
 purge_old_kernels() {
     if [[ ${TEMPLATE_KERNEL_DIR_FLAT} != true ]]; then
-        for i in $(cd "${DIR_ESP}${TEMPLATE_KERNEL_DIR}"; ls -1); do
-            if [ ! -d "/usr/lib/modules/${i}" ]; then
-                log_info "Purging non-existant kernel ${i}"
-                rm -rf "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${i}"
-            fi
-
-            for file in $(cd "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${i}"; ls -1); do
-                local search="${TEMPLATE_KERNEL_DIR}/${i}/${file}"
-                if [ -z "$(grep "${search}" /boot/efi/loader/entries/*)" ]; then
-                    log_info "Removing unused ${search} file"
-                    rm -f "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${i}/${file}"
+        if [ -d "${DIR_ESP}${TEMPLATE_KERNEL_DIR}" ]; then
+            for i in $(cd "${DIR_ESP}${TEMPLATE_KERNEL_DIR}"; ls -1); do
+                if [ ! -d "/usr/lib/modules/${i}" ]; then
+                    log_info "Purging non-existant kernel ${i}"
+                    rm -rf "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${i}"
                 fi
+
+                for file in $(cd "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${i}"; ls -1); do
+                    local search="${TEMPLATE_KERNEL_DIR}/${i}/${file}"
+                    if [ -z "$(grep "${search}" "${DIR_ESP}/loader/entries/"*)" ]; then
+                        log_info "Removing unused ${search} file"
+                        rm -f "${DIR_ESP}${TEMPLATE_KERNEL_DIR}/${i}/${file}"
+                    fi
+                done
             done
-        done
+        fi
 
         for entry in "${DIR_ESP}/loader/entries${TEMPLATE_KERNEL_DIR}-"*; do
             local name="${entry#*${TEMPLATE_KERNEL_DIR}-}"
-            local kernel="$(echo "$name" | sed -r "s/(-[0-9]*)*\.conf$//")"
-            if [[ -n "${kernel}" && ! -d "/usr/lib/modules/${kernel}" ]]; then
+            local kernel="${name%%.conf}"
+            if [ -z "${kernel}" ]; then
+                continue
+            fi
+
+            # Try to match just the kernel name first
+            if [[ -d "/usr/lib/modules/${kernel}" ]]; then
+                continue
+            fi
+
+            kernel="$(echo "$kernel" | sed -r "s/(-[0-9]*)$//")"
+            if [[ ! -d "/usr/lib/modules/${kernel}" ]]; then
                 log_info "Removing entry ${kernel}"
                 rm -f "${entry}"
             fi
